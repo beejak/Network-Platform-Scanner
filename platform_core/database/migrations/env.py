@@ -5,10 +5,11 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from platform_core.auth.models import *
+from platform_core.auth.models import User, Tenant
 from platform_core.config import settings
 # Import your Base model and settings
 from platform_core.database.postgres import Base
+from products.netbox.models import Site, Device, IPAddress
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

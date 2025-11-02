@@ -138,3 +138,465 @@ network-platform/
 ├── mypy.ini
 └── README.md
 ```
+
+### Step 2: Core Database Models with Multi-Tenancy (2 hours)
+
+**File: platform_core/database/postgres.py**
+```python
+"""
+Multi-tenant PostgreSQL database with row-level security.
+Every table MUST have tenant_id for isolation.
+"""
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase, declared_attr, Mapped, mapped_column
+from sqlalchemy import String, DateTime, func, Index
+from typing import Optional
+import uuid
+
+class Base(DeclarativeBase):
+    """Base class with multi-tenancy support."""
+
+    @declared_attr
+    def __tablename__(cls) -> str:
+        return cls.__name__.lower()
+
+    # CRITICAL: Every table has these columns
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(index=True)  # MANDATORY for multi-tenancy
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), onupdate=func.now())
+
+
+class DatabaseManager:
+    """Async database connection manager with tenant context."""
+
+    def __init__(self, connection_string: str):
+        self.engine = create_async_engine(
+            connection_string,
+            echo=False,
+            pool_size=20,
+            max_overflow=40
+        )
+        self.session_factory = async_sessionmaker(
+            self.engine, class_=AsyncSession, expire_on_commit=False
+        )
+
+    async def get_session(self, tenant_id: uuid.UUID) -> AsyncSession:
+        """Get session with tenant context injected."""
+        session = self.session_factory()
+        # Set tenant context - all queries auto-filtered by tenant_id
+        await session.execute(f"SET app.current_tenant = '{tenant_id}'")
+        return session
+
+
+# Tenant model
+class Tenant(Base):
+    __tablename__ = 'tenants'
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    # Tenant's own tenant_id is self-referential for compatibility
+    tenant_id: Mapped[uuid.UUID] = mapped_column(default=lambda: uuid.uuid4())
+
+# User model with tenant membership
+class User(Base):
+    __tablename__ = 'users'
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(default=True)
+```
+
+### Step 3: RBAC with Casbin (2 hours)
+
+**File: platform_core/auth/rbac.py**
+```python
+"""
+Role-Based Access Control using Casbin.
+Supports multi-tenancy with per-tenant policies.
+"""
+import casbin
+import casbin_async_sqlalchemy_adapter
+from typing import List, Optional
+import uuid
+
+class RBACManager:
+    """Manages RBAC policies with Casbin."""
+
+    def __init__(self, db_url: str):
+        # Casbin model definition
+        self.model_conf = """
+[request_definition]
+r = sub, obj, act, tenant
+
+[policy_definition]
+p = sub, obj, act, tenant
+
+[role_definition]
+g = _, _, _
+
+[policy_effect]
+e = some(where (p.eft == allow))
+
+[matchers]
+m = g(r.sub, p.sub, r.tenant) && r.obj == p.obj && r.act == p.act && r.tenant == p.tenant
+"""
+        # Initialize adapter (async SQLAlchemy)
+        self.adapter = casbin_async_sqlalchemy_adapter.Adapter(db_url)
+        self.enforcer = casbin.AsyncEnforcer(self.model_conf, self.adapter)
+
+    async def check_permission(
+        self,
+        user_id: str,
+        resource: str,
+        action: str,
+        tenant_id: str
+    ) -> bool:
+        """Check if user has permission for action on resource in tenant."""
+        return await self.enforcer.enforce(user_id, resource, action, tenant_id)
+
+    async def add_role_for_user(
+        self,
+        user_id: str,
+        role: str,
+        tenant_id: str
+    ) -> bool:
+        """Assign role to user within a tenant."""
+        return await self.enforcer.add_role_for_user(user_id, role, tenant_id)
+
+    async def add_policy(
+        self,
+        role: str,
+        resource: str,
+        action: str,
+        tenant_id: str
+    ) -> bool:
+        """Add permission policy for a role in a tenant."""
+        return await self.enforcer.add_policy(role, resource, action, tenant_id)
+
+# Default roles and permissions
+DEFAULT_ROLES = {
+    "admin": ["*", "*", "all"],  # Full access
+    "operator": ["devices", "networks", "flows"],
+    "viewer": ["read"],
+}
+```
+
+### Step 4: Plugin System (3 hours)
+
+**File: platform_core/plugins/base.py**
+```python
+"""
+Abstract base class for all product plugins.
+Each of the 15 products will inherit from this.
+"""
+from abc import ABC, abstractmethod
+from typing import Dict, List, Optional, Any
+from fastapi import APIRouter
+from pydantic import BaseModel
+import uuid
+
+class PluginMetadata(BaseModel):
+    """Plugin metadata model."""
+    name: str
+    version: str
+    description: str
+    author: str
+    requires: List[str] = []  # Dependencies on other plugins
+    capabilities: List[str] = []
+
+class BasePlugin(ABC):
+    """Abstract base class that all product plugins inherit."""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.metadata = self.get_metadata()
+        self.is_initialized = False
+
+    @abstractmethod
+    def get_metadata(self) -> PluginMetadata:
+        """Return plugin metadata."""
+        pass
+
+    @abstractmethod
+    async def initialize(self) -> bool:
+        """Initialize plugin resources (DB tables, connections, etc.)."""
+        pass
+
+    @abstractmethod
+    async def shutdown(self) -> bool:
+        """Cleanup plugin resources."""
+        pass
+
+    @abstractmethod
+    def get_router(self) -> Optional[APIRouter]:
+        """Return FastAPI router for plugin API endpoints."""
+        pass
+
+    @abstractmethod
+    async def health_check(self) -> Dict[str, Any]:
+        """Check plugin health status."""
+        pass
+
+    # Tenant-aware methods
+    async def on_tenant_created(self, tenant_id: uuid.UUID):
+        """Hook called when new tenant is created."""
+        pass
+
+    async def on_tenant_deleted(self, tenant_id: uuid.UUID):
+        """Hook called when tenant is deleted."""
+        pass
+```
+
+**File: platform_core/plugins/registry.py**
+```python
+"""
+Plugin registry for loading and managing plugins.
+"""
+from typing import Dict, List, Optional
+from .base import BasePlugin, PluginMetadata
+import importlib
+import pkgutil
+import logging
+
+logger = logging.getLogger(__name__)
+
+class PluginRegistry:
+    """Central registry for all plugins."""
+
+    def __init__(self):
+        self.plugins: Dict[str, BasePlugin] = {}
+        self.load_order: List[str] = []
+
+    def register_plugin(self, plugin: BasePlugin) -> bool:
+        """Register a plugin instance."""
+        name = plugin.metadata.name
+        if name in self.plugins:
+            logger.warning(f"Plugin {name} already registered")
+            return False
+
+        self.plugins[name] = plugin
+        logger.info(f"Registered plugin: {name} v{plugin.metadata.version}")
+        return True
+
+    def discover_plugins(self, plugin_directory: str = "products"):
+        """Auto-discover plugins in the products directory."""
+        import products  # The products package
+
+        for importer, modname, ispkg in pkgutil.iter_modules(products.__path__):
+            if ispkg:
+                try:
+                    module = importlib.import_module(f"products.{modname}")
+                    # Look for Plugin class in module
+                    if hasattr(module, 'Plugin'):
+                        plugin_class = getattr(module, 'Plugin')
+                        plugin_instance = plugin_class(config={})
+                        self.register_plugin(plugin_instance)
+                except Exception as e:
+                    logger.error(f"Failed to load plugin {modname}: {e}")
+
+    async def initialize_all(self):
+        """Initialize all plugins in dependency order."""
+        # Topological sort based on requires
+        self.load_order = self._compute_load_order()
+
+        for plugin_name in self.load_order:
+            plugin = self.plugins[plugin_name]
+            try:
+                await plugin.initialize()
+                plugin.is_initialized = True
+                logger.info(f"Initialized plugin: {plugin_name}")
+            except Exception as e:
+                logger.error(f"Failed to initialize {plugin_name}: {e}")
+                raise
+
+    def _compute_load_order(self) -> List[str]:
+        """Compute plugin load order based on dependencies."""
+        # Simple topological sort
+        visited = set()
+        order = []
+
+        def visit(name: str):
+            if name in visited:
+                return
+            visited.add(name)
+            plugin = self.plugins[name]
+            for dep in plugin.metadata.requires:
+                if dep in self.plugins:
+                    visit(dep)
+            order.append(name)
+
+        for name in self.plugins:
+            visit(name)
+
+        return order
+
+# Global registry instance
+plugin_registry = PluginRegistry()
+```
+
+### Step 5: Event Bus (RabbitMQ) (2 hours)
+
+**File: platform_core/events/bus.py**
+```python
+"""
+Async event bus using RabbitMQ for inter-plugin communication.
+"""
+import aio_pika
+from aio_pika import connect_robust, Message, ExchangeType
+from typing import Callable, Dict, Any, Optional
+import json
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+class EventBus:
+    """RabbitMQ-based event bus for asynchronous communication."""
+
+    def __init__(self, rabbitmq_url: str):
+        self.url = rabbitmq_url
+        self.connection: Optional[aio_pika.RobustConnection] = None
+        self.channel: Optional[aio_pika.Channel] = None
+        self.exchange: Optional[aio_pika.Exchange] = None
+        self.subscribers: Dict[str, Callable] = {}
+
+    async def connect(self):
+        """Establish RabbitMQ connection."""
+        self.connection = await connect_robust(self.url)
+        self.channel = await self.connection.channel()
+
+        # Create topic exchange for event routing
+        self.exchange = await self.channel.declare_exchange(
+            'network_platform_events',
+            ExchangeType.TOPIC,
+            durable=True
+        )
+        logger.info("Event bus connected to RabbitMQ")
+
+    async def publish(self, event_type: str, payload: Dict[str, Any], tenant_id: str):
+        """Publish event to the bus."""
+        if not self.exchange:
+            raise RuntimeError("Event bus not connected")
+
+        routing_key = f"{tenant_id}.{event_type}"
+        message_body = json.dumps({
+            "event_type": event_type,
+            "payload": payload,
+            "tenant_id": tenant_id
+        })
+
+        await self.exchange.publish(
+            Message(body=message_body.encode()),
+            routing_key=routing_key
+        )
+        logger.debug(f"Published event: {routing_key}")
+
+    async def subscribe(
+        self,
+        event_pattern: str,
+        handler: Callable,
+        queue_name: Optional[str] = None
+    ):
+        """Subscribe to events matching pattern (e.g., '*.device.added')."""
+        if not self.channel:
+            raise RuntimeError("Event bus not connected")
+
+        queue = await self.channel.declare_queue(
+            queue_name or f"queue_{event_pattern}",
+            durable=True
+        )
+        await queue.bind(self.exchange, routing_key=event_pattern)
+
+        async def process_message(message: aio_pika.IncomingMessage):
+            async with message.process():
+                try:
+                    event_data = json.loads(message.body.decode())
+                    await handler(event_data)
+                except Exception as e:
+                    logger.error(f"Error processing event: {e}")
+
+        await queue.consume(process_message)
+        logger.info(f"Subscribed to events: {event_pattern}")
+
+# Global event bus instance
+event_bus = EventBus("amqp://guest:guest@rabbitmq:5672/")
+```
+
+### Step 6: FastAPI Application with Middleware (2 hours)
+
+**File: platform_core/api/main.py**
+```python
+"""
+FastAPI application with tenant isolation middleware.
+"""
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import uuid
+import logging
+
+from ..database.postgres import DatabaseManager
+from ..auth.rbac import RBACManager
+from ..plugins.registry import plugin_registry
+from ..events.bus import event_bus
+
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown."""
+    # Startup
+    logger.info("Starting Network Platform...")
+
+    # Connect to databases
+    await app.state.db_manager.engine.begin()
+
+    # Connect event bus
+    await event_bus.connect()
+
+    # Discover and initialize plugins
+    plugin_registry.discover_plugins()
+    await plugin_registry.initialize_all()
+
+    # Mount plugin routers
+    for plugin_name, plugin in plugin_registry.plugins.items():
+        router = plugin.get_router()
+        if router:
+            app.include_router(router, prefix=f"/api/{plugin_name}", tags=[plugin_name])
+
+    logger.info("Platform started successfully")
+    yield
+
+    # Shutdown
+    logger.info("Shutting down platform...")
+    for plugin in plugin_registry.plugins.values():
+        await plugin.shutdown()
+
+def create_app() -> FastAPI:
+    """Factory function to create FastAPI app."""
+    app = FastAPI(
+        title="Network Infrastructure Platform",
+        version="1.0.0",
+        lifespan=lifespan
+    )
+
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Tenant isolation middleware
+    @app.middleware("http")
+    async def tenant_isolation_middleware(request: Request, call_next):
+        """Extract and validate tenant from JWT token."""
+        # Extract tenant_id from JWT or header
+        tenant_id = request.headers.get("X-Tenant-ID")
+
+        if not tenant_id and request.url.path.startswith("/api/"):
+            raise HTTPException(status_code=401, detail="Tenant ID required")
+
+        if tenant_id:
+            try:
+                r
