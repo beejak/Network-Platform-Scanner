@@ -1,63 +1,94 @@
-"""
-FastAPI application with tenant isolation middleware.
-"""
-import logging
-import uuid
-from contextlib import asynccontextmanager
-
-from fastapi import Depends, FastAPI, HTTPException, Request
+"""FastAPI application with plugin support."""
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import logging
+import os
+import uuid
+from typing import Optional
 
-from platform_core.auth.rbac import RBACManager
-from platform_core.config import settings
-from platform_core.database.postgres import DatabaseManager
-from platform_core.events.bus import event_bus
 from platform_core.plugins.registry import plugin_registry
+from platform_core.database.neo4j_conn import Neo4jManager, neo4j_manager as global_neo4j_manager
 
 logger = logging.getLogger(__name__)
 
 
-from typing import AsyncGenerator
+def lifespan_factory(neo4j_manager: Neo4jManager):
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """
+        Application lifespan management.
+        """
+        logger.info("="*80)
+        logger.info("APPLICATION STARTUP")
+        logger.info("="*80)
+
+        try:
+            # Step 1: Discover plugins
+            logger.info("Step 1: Discovering plugins...")
+            plugin_registry.discover_plugins()
+
+            plugin_count = len(plugin_registry.plugins)
+            logger.info(f"✅ Discovered {plugin_count} plugins: {list(plugin_registry.plugins.keys())}")
+
+            if plugin_count == 0:
+                logger.error("❌ NO PLUGINS DISCOVERED! This will cause 404 errors!")
+                if os.getenv("TESTING") == "true":
+                    raise RuntimeError("No plugins discovered in test mode!")
+
+            # Step 2: Initialize plugins
+            logger.info("Step 2: Initializing plugins...")
+            await plugin_registry.initialize_all(neo4j_manager=neo4j_manager)
+            logger.info("✅ All plugins initialized")
+
+            # Step 3: Mount plugin routers
+            logger.info("Step 3: Mounting plugin routers...")
+
+            for plugin_name, plugin in plugin_registry.plugins.items():
+                router = plugin.get_router()
+
+                if router:
+                    prefix = f"/api/{plugin_name}"
+                    app.include_router(router, prefix=prefix, tags=[plugin_name])
+                    route_count = len(router.routes)
+                    logger.info(f"  ✅ {plugin_name}: mounted {route_count} routes at {prefix}")
+                else:
+                    logger.warning(f"  ⚠️  {plugin_name}: no router available")
+
+            logger.info("="*80)
+            logger.info("✅ APPLICATION STARTUP COMPLETE")
+            logger.info("="*80)
+
+        except Exception as e:
+            logger.error(f"❌ STARTUP FAILED: {e}", exc_info=True)
+            raise
+
+        yield
+
+        logger.info("="*80)
+        logger.info("APPLICATION SHUTDOWN")
+        logger.info("="*80)
+
+        try:
+            await plugin_registry.shutdown_all()
+            logger.info("✅ Shutdown complete")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+
+    return lifespan
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan: startup and shutdown."""
-    # Startup
-    logger.info("Starting Network Platform...")
+def create_app(neo4j_manager: Optional[Neo4jManager] = None) -> FastAPI:
+    """Create FastAPI application."""
+    manager = neo4j_manager if neo4j_manager else global_neo4j_manager
 
-    app.state.db_manager = DatabaseManager(settings.DATABASE_URL)
-
-    # Connect event bus
-    await event_bus.connect()
-
-    # Discover and initialize plugins
-    plugin_registry.discover_plugins()
-    await plugin_registry.initialize_all()
-
-    # Mount plugin routers
-    for plugin_name, plugin in plugin_registry.plugins.items():
-        router = plugin.get_router()
-        if router:
-            app.include_router(router, prefix=f"/api/{plugin_name}", tags=[plugin_name])
-
-    logger.info("Platform started successfully")
-    yield
-
-    # Shutdown
-    logger.info("Shutting down platform...")
-    for plugin in plugin_registry.plugins.values():
-        await plugin.shutdown()
-    await app.state.db_manager.engine.dispose()
-
-
-def create_app() -> FastAPI:
-    """Factory function to create FastAPI app."""
     app = FastAPI(
-        title="Network Infrastructure Platform", version="1.0.0", lifespan=lifespan
+        title="Network Infrastructure Platform",
+        version="1.0.0",
+        lifespan=lifespan_factory(manager)
     )
 
-    # CORS middleware
+    # CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -66,15 +97,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from platform_core.api.middleware import TenantIsolationMiddleware
-
-    app.add_middleware(TenantIsolationMiddleware)
-
-    @app.get("/health")  # type: ignore
-    async def health_check() -> dict[str, str]:
-        return {"status": "ok"}
+    # Health endpoint
+    @app.get("/health")
+    def health():
+        return {
+            "status": "healthy",
+            "plugins": list(plugin_registry.plugins.keys())
+        }
 
     return app
-
-
-app = create_app()

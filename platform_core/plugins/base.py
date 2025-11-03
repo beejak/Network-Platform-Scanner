@@ -35,7 +35,7 @@ class BasePlugin(ABC):
         pass
 
     @abstractmethod
-    async def initialize(self) -> bool:
+    async def initialize(self, **kwargs) -> bool:
         """Initialize plugin resources (DB tables, connections, etc.)."""
         pass
 

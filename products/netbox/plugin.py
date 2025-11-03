@@ -21,7 +21,7 @@ class NetBoxPlugin(BasePlugin):
             capabilities=["ipam", "dcim"],
         )
 
-    async def initialize(self) -> bool:
+    async def initialize(self, **kwargs) -> bool:
         """Initialize plugin resources."""
         # In a real implementation, this would connect to NetBox,
         # create database tables, etc.
@@ -37,5 +37,4 @@ class NetBoxPlugin(BasePlugin):
 
     async def health_check(self) -> Dict[str, Any]:
         """Check plugin health status."""
-        # We will implement a proper health check later.
-        return {"status": "ok"}
+        return {"status": "ok", "router_initialized": router is not None}
