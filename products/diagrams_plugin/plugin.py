@@ -12,49 +12,45 @@ class DiagramsPlugin(BasePlugin):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.router = None
+        self._router = None
 
     def get_metadata(self) -> PluginMetadata:
-        """Return plugin metadata."""
         return PluginMetadata(
             name="diagrams",
             version="1.0.0",
-            description="Infrastructure diagram generation from code",
+            description="Infrastructure diagram generation",
             author="Network Platform Team",
-            requires=[],  # No dependencies
-            capabilities=["diagram_rendering", "template_management"]
+            requires=[],
+            capabilities=["diagram_rendering"]
         )
 
     async def initialize(self, **kwargs) -> bool:
-        """Initialize plugin resources."""
+        """Initialize plugin."""
         try:
             logger.info("Initializing Diagrams plugin...")
 
-            # Import routes (do this here to avoid circular imports)
-            from .api import router as diagrams_router
-            self.router = diagrams_router
+            # Create router
+            from .api import create_diagrams_router
+            self._router = create_diagrams_router()
 
             logger.info("✅ Diagrams plugin initialized")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize Diagrams plugin: {e}")
+            logger.error(f"Failed to initialize Diagrams: {e}", exc_info=True)
             return False
 
     async def shutdown(self) -> bool:
-        """Cleanup plugin resources."""
+        """Shutdown plugin."""
         logger.info("Shutting down Diagrams plugin...")
         return True
 
     def get_router(self) -> Optional[APIRouter]:
-        """Return FastAPI router for plugin API endpoints."""
-        return self.router
+        return self._router
 
     async def health_check(self) -> Dict[str, Any]:
-        """Check plugin health status."""
         return {
             "status": "healthy",
             "plugin": self.metadata.name,
-            "version": self.metadata.version,
             "initialized": self.is_initialized
         }

@@ -1,8 +1,7 @@
-"""NetBox plugin for IPAM/DCIM management."""
-
+"""NetBox plugin package."""
 from .plugin import NetBoxPlugin
 
-# CRITICAL: Export the Plugin class so registry can find it
+# Export Plugin for discovery
 Plugin = NetBoxPlugin
 
 __all__ = ['Plugin', 'NetBoxPlugin']

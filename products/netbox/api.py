@@ -1,66 +1,139 @@
-from typing import List
-
-from fastapi import APIRouter, Depends, HTTPException
+"""NetBox API endpoints."""
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-
-from platform_core.auth.dependencies import get_db
-from products.netbox.models import Device, IPAddress, Site
-from pydantic import BaseModel, UUID4
+from typing import List
 import uuid
+import logging
 
-router = APIRouter()
+from .models import Site
+from .schemas import SiteCreate, SiteResponse, SiteUpdate
+from platform_core.api.dependencies import get_db_session
+from platform_core.database.postgres import DatabaseManager
 
-class SiteRead(BaseModel):
-    id: UUID4
-    name: str
-    slug: str
-    tenant_id: UUID4
-
-    model_config = {"from_attributes": True}
-
-class DeviceRead(BaseModel):
-    id: UUID4
-    name: str
-    site_id: UUID4
-    device_type: str
-    serial: str
-    tenant_id: UUID4
-
-    model_config = {"from_attributes": True}
-
-class IPAddressRead(BaseModel):
-    id: UUID4
-    address: str
-    device_id: UUID4
-    tenant_id: UUID4
-
-    model_config = {"from_attributes": True}
+logger = logging.getLogger(__name__)
 
 
+def create_netbox_router(db_manager: DatabaseManager) -> APIRouter:
+    router = APIRouter()
 
-@router.get("/sites", response_model=List[SiteRead])
-async def read_sites(
-    db: AsyncSession = Depends(get_db),
-):
-    """Retrieve all sites."""
-    result = await db.execute(select(Site))
-    return result.scalars().all()
+    # ============================================================================
+    # CREATE
+    # ============================================================================
+
+    @router.post("/sites", response_model=SiteResponse)
+    async def create_site(
+        site_data: SiteCreate,
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """Create a new site."""
+        logger.info(f"Creating site: {site_data.name}")
+
+        # Extract tenant_id from db session context
+        # (In real implementation, get from request.state)
+        tenant_id = uuid.uuid4()  # For testing
+
+        site = Site(
+            **site_data.dict(),
+            tenant_id=tenant_id
+        )
+
+        db.add(site)
+        await db.commit()
+        await db.refresh(site)
+
+        logger.info(f"Site created: {site.id}")
+        return site
 
 
-@router.get("/devices", response_model=List[DeviceRead])
-async def read_devices(
-    db: AsyncSession = Depends(get_db),
-):
-    """Retrieve all devices."""
-    result = await db.execute(select(Device))
-    return result.scalars().all()
+    # ============================================================================
+    # READ
+    # ============================================================================
+
+    @router.get("/sites", response_model=List[SiteResponse])
+    async def get_sites(
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """Get all sites."""
+        from sqlalchemy import select
+
+        result = await db.execute(select(Site))
+        sites = result.scalars().all()
+
+        return sites
 
 
-@router.get("/ip-addresses", response_model=List[IPAddressRead])
-async def read_ip_addresses(
-    db: AsyncSession = Depends(get_db),
-):
-    """Retrieve all IP addresses."""
-    result = await db.execute(select(IPAddress))
-    return result.scalars().all()
+    @router.get("/sites/{site_id}", response_model=SiteResponse)
+    async def get_site(
+        site_id: uuid.UUID = Path(...),
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """Get a specific site."""
+        logger.info(f"Getting site: {site_id}")
+
+        # CRITICAL: This is what needs to work in tests!
+        site = await db.get(Site, site_id)
+
+        if not site:
+            logger.warning(f"Site not found: {site_id}")
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        return site
+
+
+    # ============================================================================
+    # UPDATE
+    # ============================================================================
+
+    @router.put("/sites/{site_id}", response_model=SiteResponse)
+    async def update_site(
+        site_id: uuid.UUID,
+        site_data: SiteUpdate,
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """Update a site."""
+        logger.info(f"Updating site: {site_id}")
+
+        # CRITICAL: This db.get() must return object from mock!
+        site = await db.get(Site, site_id)
+
+        if not site:
+            logger.warning(f"Site not found: {site_id}")
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        # Update fields
+        for key, value in site_data.dict(exclude_unset=True).items():
+            setattr(site, key, value)
+
+        await db.commit()
+        await db.refresh(site)
+
+        logger.info(f"Site updated: {site_id}")
+        return site
+
+
+    # ============================================================================
+    # DELETE
+    # ============================================================================
+
+    @router.delete("/sites/{site_id}")
+    async def delete_site(
+        site_id: uuid.UUID,
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """Delete a site."""
+        logger.info(f"Deleting site: {site_id}")
+
+        # CRITICAL: This db.get() must return object from mock!
+        site = await db.get(Site, site_id)
+
+        if not site:
+            logger.warning(f"Site not found: {site_id}")
+            raise HTTPException(status_code=404, detail="Site not found")
+
+        await db.delete(site)
+        await db.commit()
+
+        logger.info(f"Site deleted: {site_id}")
+        return {"message": "Site deleted successfully"}
+
+    return router

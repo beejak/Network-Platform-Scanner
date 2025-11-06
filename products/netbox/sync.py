@@ -1,147 +1,93 @@
+"""
+Service for synchronizing data from a NetBox instance.
+"""
 import uuid
-from typing import Any, Dict
-
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from typing import Dict, Any, List
 
-from platform_core.database.postgres import DatabaseManager
-from products.netbox.client import NetBoxClient
-from products.netbox.models import Device, IPAddress, Site
+from .models import Site, Device, IPAddress
+from .client import NetBoxClient
 
+logger = logging.getLogger(__name__)
 
 class NetBoxSyncService:
-    """Service for syncing NetBox data to local database."""
+    """
+    Service to synchronize data from a NetBox instance to the local database.
+    """
+    def __init__(self, db: AsyncSession, tenant_id: uuid.UUID):
+        self.db = db
+        self.tenant_id = str(tenant_id)
 
-    def __init__(self, client: NetBoxClient, db_manager: DatabaseManager):
-        self.client = client
-        self.db_manager = db_manager
+    async def sync_data(self):
+        """
+        Fetch data from NetBox and synchronize it with the local database.
+        """
+        # In a real app, you'd get these from config
+        client = NetBoxClient(api_url="http://netbox:8080", token="test-token")
 
-    async def sync_sites(self, tenant_id: uuid.UUID) -> int:
-        """Sync sites from NetBox to local database."""
-        # 1. Get data from NetBox API (full response with 'results' key)
-        response = await self.client.get_sites()
-        sites_data = response.get("results", [])  # ← Extract results list
+        await self._sync_sites(client)
+        await self._sync_devices(client)
+        await self.db.commit()
 
-        # 2. Get database session with tenant context
-        async with self.db_manager.get_session(tenant_id) as session:
-            synced_count = 0
+    async def _sync_sites(self, client: NetBoxClient):
+        sites_data = await client.get_sites()
+        for site_data in sites_data:
+            site = await self.db.execute(
+                select(Site).where(Site.netbox_id == site_data["id"], Site.tenant_id == self.tenant_id)
+            )
+            site = site.scalars().first()
 
-            # 3. Process each item
-            for site_data in sites_data:
-                # Check if exists
-                result = await session.execute(
-                    select(Site).where(
-                        Site.netbox_id == site_data["id"],
-                        Site.tenant_id == tenant_id,
-                    )
+            if site:
+                site.name = site_data["name"]
+                site.slug = site_data["slug"]
+            else:
+                site = Site(
+                    netbox_id=site_data["id"],
+                    name=site_data["name"],
+                    slug=site_data["slug"],
+                    tenant_id=self.tenant_id
                 )
-                existing_site = result.scalar_one_or_none()
+            self.db.add(site)
 
-                if existing_site:
-                    # Update existing
-                    existing_site.name = site_data["name"]
-                    existing_site.slug = site_data["slug"]
-                    existing_site.description = site_data.get("description", "")
-                else:
-                    # Create new
-                    new_site = Site(
-                        netbox_id=site_data["id"],
-                        name=site_data["name"],
-                        slug=site_data["slug"],
-                        description=site_data.get("description", ""),
-                        tenant_id=tenant_id,
-                    )
-                    await session.add(new_site)
+    async def _sync_devices(self, client: NetBoxClient):
+        devices_data = await client.get_devices()
+        logger.info(f"Syncing {len(devices_data)} devices...")
+        for device_data in devices_data:
+            device_result = await self.db.execute(
+                select(Device).where(Device.netbox_id == device_data["id"], Device.tenant_id == self.tenant_id)
+            )
+            device = device_result.scalars().first()
+            logger.info(f"Found existing device: {device}")
 
-                synced_count += 1
+            site_result = await self.db.execute(
+                select(Site).where(Site.netbox_id == device_data["site_id"], Site.tenant_id == self.tenant_id)
+            )
+            site = site_result.scalars().first()
+            logger.info(f"Found site for device: {site}")
 
-            # 4. Commit transaction
-            await session.commit()
+            if not site:
+                logger.warning(f"Skipping device {device_data['name']} because site {device_data['site_id']} was not found.")
+                continue
 
-        return synced_count
-
-    async def sync_devices(self, tenant_id: uuid.UUID) -> int:
-        """Sync devices from NetBox."""
-        response = await self.client.get_devices()
-        devices_data = response.get("results", [])
-
-        async with self.db_manager.get_session(tenant_id) as session:
-            synced_count = 0
-
-            for device_data in devices_data:
-                result = await session.execute(
-                    select(Device).where(
-                        Device.netbox_id == device_data["id"],
-                        Device.tenant_id == tenant_id,
-                    )
+            if device:
+                logger.info(f"Updating device {device.name}")
+                device.name = device_data["name"]
+                device.device_type = device_data["device_type"]
+                device.device_role = device_data["device_role"]
+                device.serial = device_data["serial"]
+                device.site_id = site.id
+            else:
+                logger.info(f"Creating new device {device_data['name']}")
+                device = Device(
+                    netbox_id=device_data["id"],
+                    name=device_data["name"],
+                    device_type=device_data["device_type"],
+                    device_role=device_data["device_role"],
+                    serial=device_data["serial"],
+                    site_id=site.id,
+                    tenant_id=self.tenant_id
                 )
-                existing_device = result.scalar_one_or_none()
-
-                if existing_device:
-                    existing_device.name = device_data["name"]
-                    existing_device.device_type = device_data.get(
-                        "device_type", {}
-                    ).get("display", "")
-                    existing_device.device_role = device_data.get(
-                        "device_role", {}
-                    ).get("display", "")
-                    existing_device.site_id = device_data.get("site", {}).get("id")
-                else:
-                    new_device = Device(
-                        netbox_id=device_data["id"],
-                        name=device_data["name"],
-                        device_type=device_data.get("device_type", {}).get(
-                            "display", ""
-                        ),
-                        device_role=device_data.get("device_role", {}).get(
-                            "display", ""
-                        ),
-                        site_id=device_data.get("site", {}).get("id"),
-                        tenant_id=tenant_id,
-                    )
-                    await session.add(new_device)
-
-                synced_count += 1
-
-            await session.commit()
-
-        return synced_count
-
-    async def sync_ip_addresses(self, tenant_id: uuid.UUID) -> int:
-        """Sync IP addresses from NetBox."""
-        response = await self.client.get_ip_addresses()
-        ip_data_list = response.get("results", [])
-
-        async with self.db_manager.get_session(tenant_id) as session:
-            synced_count = 0
-
-            for ip_data in ip_data_list:
-                result = await session.execute(
-                    select(IPAddress).where(
-                        IPAddress.netbox_id == ip_data["id"],
-                        IPAddress.tenant_id == tenant_id,
-                    )
-                )
-                existing_ip = result.scalar_one_or_none()
-
-                if existing_ip:
-                    existing_ip.address = ip_data["address"]
-                    existing_ip.dns_name = ip_data.get("dns_name", "")
-                    existing_ip.description = ip_data.get("description", "")
-                    existing_ip.status = ip_data.get("status", {}).get("value", "active")
-                else:
-                    new_ip = IPAddress(
-                        netbox_id=ip_data["id"],
-                        address=ip_data["address"],
-                        dns_name=ip_data.get("dns_name", ""),
-                        description=ip_data.get("description", ""),
-                        status=ip_data.get("status", {}).get("value", "active"),
-                        tenant_id=tenant_id,
-                    )
-                    await session.add(new_ip)
-
-                synced_count += 1
-
-            await session.commit()
-
-        return synced_count
+            self.db.add(device)
+            logger.info("Device added to session.")

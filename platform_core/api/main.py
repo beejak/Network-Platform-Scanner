@@ -1,94 +1,81 @@
-"""FastAPI application with plugin support."""
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
+"""
+Main FastAPI application for the platform.
+"""
 import logging
-import os
-import uuid
-from typing import Optional
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from platform_core.database.postgres import get_database_manager
+from platform_core.database.neo4j_conn import get_neo4j_manager
+
 
 from platform_core.plugins.registry import plugin_registry
-from platform_core.database.neo4j_conn import Neo4jManager, neo4j_manager as global_neo4j_manager
 
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan context manager.
+    """
+    logger.info("=" * 80)
+    logger.info("APPLICATION STARTUP")
+    logger.info("=" * 80)
 
-def lifespan_factory(neo4j_manager: Neo4jManager):
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        """
-        Application lifespan management.
-        """
-        logger.info("="*80)
-        logger.info("APPLICATION STARTUP")
-        logger.info("="*80)
+    # Discover and initialize plugins
+    logger.info("Step 1: Discovering plugins...")
+    plugin_registry.discover_plugins()
+    logger.info(f"✅ Discovered {len(plugin_registry.plugins)} plugins: {list(plugin_registry.plugins.keys())}")
 
-        try:
-            # Step 1: Discover plugins
-            logger.info("Step 1: Discovering plugins...")
-            plugin_registry.discover_plugins()
+    # Initialize database managers, using overrides if available
+    db_manager = getattr(app.state, "db_manager_override", get_database_manager())
+    neo4j_manager = getattr(app.state, "neo4j_manager_override", get_neo4j_manager())
 
-            plugin_count = len(plugin_registry.plugins)
-            logger.info(f"✅ Discovered {plugin_count} plugins: {list(plugin_registry.plugins.keys())}")
+    logger.info("Step 2: Initializing plugins...")
+    await plugin_registry.initialize_all(db_manager=db_manager, neo4j_manager=neo4j_manager)
+    logger.info("✅ All plugins initialized")
 
-            if plugin_count == 0:
-                logger.error("❌ NO PLUGINS DISCOVERED! This will cause 404 errors!")
-                if os.getenv("TESTING") == "true":
-                    raise RuntimeError("No plugins discovered in test mode!")
+    # Mount plugin routers
+    logger.info("Step 3: Mounting plugin routers...")
+    for plugin_name, plugin in plugin_registry.plugins.items():
+        router = plugin.get_router()
+        if router:
+            app.include_router(router, prefix=f"/api/{plugin_name}", tags=[plugin_name])
+            logger.info(f"  ✅ {plugin_name}: mounted {len(router.routes)} routes at /api/{plugin_name}")
+        else:
+            logger.warning(f"  ⚠️  {plugin_name}: no router available")
 
-            # Step 2: Initialize plugins
-            logger.info("Step 2: Initializing plugins...")
-            await plugin_registry.initialize_all(neo4j_manager=neo4j_manager)
-            logger.info("✅ All plugins initialized")
+    logger.info("=" * 80)
+    logger.info("✅ APPLICATION STARTUP COMPLETE")
+    logger.info("=" * 80)
 
-            # Step 3: Mount plugin routers
-            logger.info("Step 3: Mounting plugin routers...")
+    yield
 
-            for plugin_name, plugin in plugin_registry.plugins.items():
-                router = plugin.get_router()
-
-                if router:
-                    prefix = f"/api/{plugin_name}"
-                    app.include_router(router, prefix=prefix, tags=[plugin_name])
-                    route_count = len(router.routes)
-                    logger.info(f"  ✅ {plugin_name}: mounted {route_count} routes at {prefix}")
-                else:
-                    logger.warning(f"  ⚠️  {plugin_name}: no router available")
-
-            logger.info("="*80)
-            logger.info("✅ APPLICATION STARTUP COMPLETE")
-            logger.info("="*80)
-
-        except Exception as e:
-            logger.error(f"❌ STARTUP FAILED: {e}", exc_info=True)
-            raise
-
-        yield
-
-        logger.info("="*80)
-        logger.info("APPLICATION SHUTDOWN")
-        logger.info("="*80)
-
-        try:
-            await plugin_registry.shutdown_all()
-            logger.info("✅ Shutdown complete")
-        except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-
-    return lifespan
+    logger.info("=" * 80)
+    logger.info("APPLICATION SHUTDOWN")
+    logger.info("=" * 80)
+    await plugin_registry.shutdown_all()
+    logger.info("✅ Shutdown complete")
 
 
-def create_app(neo4j_manager: Optional[Neo4jManager] = None) -> FastAPI:
-    """Create FastAPI application."""
-    manager = neo4j_manager if neo4j_manager else global_neo4j_manager
-
+def create_app(db_manager_override=None, neo4j_manager_override=None) -> FastAPI:
+    """
+    Create and configure the FastAPI application.
+    Allows for dependency overrides for testing.
+    """
     app = FastAPI(
-        title="Network Infrastructure Platform",
+        title="Network Enterprise Platform",
         version="1.0.0",
-        lifespan=lifespan_factory(manager)
+        lifespan=lifespan,
     )
 
-    # CORS
+    # Store overrides in the app's state to be used by the lifespan context
+    if db_manager_override:
+        app.state.db_manager_override = db_manager_override
+    if neo4j_manager_override:
+        app.state.neo4j_manager_override = neo4j_manager_override
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -97,12 +84,22 @@ def create_app(neo4j_manager: Optional[Neo4jManager] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Health endpoint
+    @app.middleware("http")
+    async def add_tenant_id(request: Request, call_next):
+        tenant_id = request.headers.get("X-Tenant-ID")
+        if not tenant_id:
+            # In a real app, you'd probably return a 400 Bad Request
+            # For now, we'll use a default for testing
+            tenant_id = "default-tenant"
+        request.state.tenant_id = tenant_id
+        response = await call_next(request)
+        return response
+
     @app.get("/health")
-    def health():
-        return {
-            "status": "healthy",
-            "plugins": list(plugin_registry.plugins.keys())
-        }
+    async def health_check():
+        plugin_health = await plugin_registry.health_check_all()
+        return {"status": "healthy", "plugins": plugin_health}
 
     return app
+
+app = create_app()

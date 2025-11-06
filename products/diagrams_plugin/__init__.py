@@ -1,8 +1,7 @@
-"""Diagrams plugin for infrastructure visualization."""
-
+"""Diagrams plugin package."""
 from .plugin import DiagramsPlugin
 
-# CRITICAL: Export the Plugin class
+# Export Plugin for discovery
 Plugin = DiagramsPlugin
 
 __all__ = ['Plugin', 'DiagramsPlugin']

@@ -20,13 +20,6 @@ dependencies = [
     "neo4j==5.14.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["platform_core*", "products*"]
-
-[tool.setuptools.package-data]
-"*" = ["*.ini", "*.mako"]
-
 [project.optional-dependencies]
 dev = [
     "pytest==7.4.4",
@@ -42,6 +35,12 @@ dev = [
     "aiosqlite==0.19.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["platform_core*", "products*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.ini", "*.mako"]
+
 [tool.black]
 line-length = 100
 
@@ -52,7 +51,3 @@ line_length = 100
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-python_files = "test_*.py"
-
-[tool.setuptools]
-packages = ["platform_core", "products"]

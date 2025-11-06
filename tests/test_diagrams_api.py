@@ -1,22 +1,25 @@
+"""Tests for the Diagrams Plugin API."""
 import pytest
 from httpx import AsyncClient
 
 pytestmark = pytest.mark.asyncio
 
-
-async def test_generate_diagram(client: AsyncClient):
-    """Test the /generate endpoint."""
-    request_data = {
-        "name": "My Diagram",
+async def test_generate_diagram(client: AsyncClient, auth_headers: dict):
+    """Test generating a diagram."""
+    diagram_data = {
+        "name": "test_diagram",
         "nodes": [
-            {"name": "web", "label": "Web Server", "provider": "aws", "type": "compute", "name": "ec2"},
-            {"name": "db", "label": "Database", "provider": "aws", "type": "database", "name": "rds"},
+            {"name": "web", "label": "Web Server", "type": "compute", "provider": "aws"},
+            {"name": "db", "label": "Database", "type": "database", "provider": "aws"},
         ],
-        "edges": [{"source": "web", "target": "db"}],
+        "edges": [
+            {"source": "web", "target": "db", "label": "reads from"},
+        ],
     }
-    headers = {"X-Tenant-ID": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"}
-    response = await client.post(
-        "/api/diagrams/generate", json=request_data, headers=headers
-    )
+
+    response = await client.post("/api/diagrams/generate", json=diagram_data, headers=auth_headers)
+
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
+    # Verify that the response has a non-zero content length
+    assert int(response.headers["content-length"]) > 0

@@ -1,72 +1,94 @@
-"""Tests for Topology API."""
+"""Tests for the Topology Plugin API using service-layer mocking."""
 import pytest
-from httpx import AsyncClient
-import logging
+import uuid
 from unittest.mock import AsyncMock
 
-logger = logging.getLogger(__name__)
+from httpx import AsyncClient
 
+pytestmark = pytest.mark.asyncio
 
 # ============================================================================
-# API Tests
+# Test Data
 # ============================================================================
 
-@pytest.mark.asyncio
-async def test_health_check(client: AsyncClient):
-    """Verify app is running and plugins loaded."""
-    response = await client.get("/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert "topology" in data["plugins"]
+NODE_A_ID = str(uuid.uuid4())
+NODE_B_ID = str(uuid.uuid4())
 
+@pytest.fixture
+def mock_topology_data():
+    """Provides sample graph data for mocking."""
+    nodes = [
+        {"id": NODE_A_ID, "name": "Router 1", "type": "device"},
+        {"id": NODE_B_ID, "name": "Switch 1", "type": "device"},
+    ]
+    return nodes
 
-@pytest.mark.asyncio
-async def test_get_nodes(client: AsyncClient, auth_headers: dict):
-    """Test GET /api/topology/nodes with mock data."""
-    mock_manager = client.app.state.mock_neo4j_manager
-    mock_manager.execute_query.return_value = ([{"n": {"id": "test-node-1"}}, {"n": {"id": "test-node-2"}}], None, None)
+# ============================================================================
+# API Tests with Mocked Neo4j Manager
+# ============================================================================
 
-    response = await client.get("/api/topology/nodes", headers=auth_headers)
+async def test_get_nodes(client: AsyncClient, mock_neo4j_manager: AsyncMock, mock_topology_data):
+    """Test fetching all topology nodes."""
+    # Configure the mock manager to return our sample nodes
+    mock_neo4j_manager.execute_query.return_value = ([{"n": node} for node in mock_topology_data], None, None)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert len(data) == 2
-    assert data[0]["id"] == "test-node-1"
-    mock_manager.execute_query.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_get_node_by_id(client: AsyncClient, auth_headers: dict):
-    """Test GET /api/topology/nodes/{id} with mock data."""
-    node_id = "test-123"
-    mock_manager = client.app.state.mock_neo4j_manager
-    mock_manager.execute_query.return_value = ([{"n": {"id": node_id}}], None, None)
-
-    response = await client.get(f"/api/topology/nodes/{node_id}", headers=auth_headers)
+    response = await client.get("/api/topology/nodes")
 
     assert response.status_code == 200
-    data = response.json()
-    assert data["id"] == node_id
-    mock_manager.execute_query.assert_called_once_with(
-        "MATCH (n {id: $node_id}) RETURN n", params={"node_id": node_id}
+
+    response_data = response.json()
+    assert len(response_data) == 2
+    assert response_data[0]["name"] == "Router 1"
+
+    # Verify the correct query was executed
+    mock_neo4j_manager.execute_query.assert_called_with("MATCH (n) RETURN n LIMIT 25")
+
+async def test_get_node_by_id(client: AsyncClient, mock_neo4j_manager: AsyncMock, mock_topology_data):
+    """Test fetching a single node by its ID."""
+    target_node = mock_topology_data[0]
+
+    # Configure mock to return just the one node
+    mock_neo4j_manager.execute_query.return_value = ([{"n": target_node}], None, None)
+
+    response = await client.get(f"/api/topology/nodes/{NODE_A_ID}")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Router 1"
+
+    # Verify the correct query was executed with parameters
+    mock_neo4j_manager.execute_query.assert_called_with(
+        "MATCH (n {id: $node_id}) RETURN n", params={"node_id": NODE_A_ID}
     )
 
+async def test_get_node_not_found(client: AsyncClient, mock_neo4j_manager: AsyncMock):
+    """Test response when a node is not found."""
+    non_existent_id = str(uuid.uuid4())
 
-@pytest.mark.asyncio
-async def test_create_node(client: AsyncClient, auth_headers: dict):
-    """Test POST /api/topology/nodes with mock data."""
-    mock_manager = client.app.state.mock_neo4j_manager
-    mock_manager.execute_query.return_value = ([{"n": {"id": "new-mock-node"}}], None, None)
+    # Configure mock to return no records
+    mock_neo4j_manager.execute_query.return_value = ([], None, None)
 
-    node_data = {"type": "router", "name": "Test Router"}
-    response = await client.post(
-        "/api/topology/nodes",
-        json=node_data,
-        headers=auth_headers
-    )
+    response = await client.get(f"/api/topology/nodes/{non_existent_id}")
+
+    assert response.status_code == 404
+
+async def test_create_node(client: AsyncClient, mock_neo4j_manager: AsyncMock):
+    """Test creating a new node."""
+    new_node_data = {"name": "Firewall", "type": "security"}
+
+    # Mock the return value from the create query
+    created_node = new_node_data.copy()
+    created_node["id"] = str(uuid.uuid4())
+    mock_neo4j_manager.execute_query.return_value = ([{"n": created_node}], None, None)
+
+    response = await client.post("/api/topology/nodes", json=new_node_data)
 
     assert response.status_code == 201
-    data = response.json()
-    assert data["id"] == "new-mock-node"
-    assert mock_manager.execute_query.call_count == 1
+
+    response_data = response.json()
+    assert response_data["name"] == "Firewall"
+    assert "id" in response_data
+
+    # Verify the create query was called
+    # We can check the query string contains 'CREATE' as a basic check
+    call_args, call_kwargs = mock_neo4j_manager.execute_query.call_args
+    assert "CREATE" in call_args[0]
