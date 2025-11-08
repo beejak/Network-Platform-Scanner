@@ -41,6 +41,15 @@ def create_netbox_router(db_manager: DatabaseManager) -> APIRouter:
         await db.commit()
         await db.refresh(site)
 
+        # Publish event to RabbitMQ
+        from platform_core.rabbitmq import get_rabbitmq_manager
+        rabbitmq_manager = get_rabbitmq_manager()
+        event_data = SiteResponse.from_orm(site).model_dump_json()
+        await rabbitmq_manager.publish_event(
+            routing_key="site.created",
+            message_body=event_data,
+        )
+
         logger.info(f"Site created: {site.id}")
         return site
 

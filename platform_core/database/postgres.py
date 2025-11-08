@@ -50,12 +50,14 @@ class DatabaseManager:
             yield session
 
 
+from platform_core.config import get_settings
+
 _db_manager = None
 
 def get_database_manager():
-    """Get DB manager singleton."""
+    """Get DB manager singleton, configured via application settings."""
     global _db_manager
     if _db_manager is None:
-        # In a real app, you'd get this from config
-        _db_manager = DatabaseManager("postgresql+asyncpg://localhost/test")
+        settings = get_settings()
+        _db_manager = DatabaseManager(settings.postgres_dsn)
     return _db_manager

@@ -18,14 +18,18 @@ class Neo4jManager:
             result = await session.run(query, params)
             return await result.data(), await result.summary(), await result.keys()
 
+from platform_core.config import get_settings
+
 _neo4j_manager = None
 
 def get_neo4j_manager():
-    """Get Neo4j manager singleton."""
+    """Get Neo4j manager singleton, configured via application settings."""
     global _neo4j_manager
     if _neo4j_manager is None:
-        uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-        user = os.environ.get("NEO4J_USER", "neo4j")
-        password = os.environ.get("NEO4J_PASSWORD", "password")
-        _neo4j_manager = Neo4jManager(uri, user, password)
+        settings = get_settings()
+        _neo4j_manager = Neo4jManager(
+            uri=settings.NEO4J_URI,
+            user=settings.NEO4J_USER,
+            password=settings.NEO4J_PASSWORD
+        )
     return _neo4j_manager

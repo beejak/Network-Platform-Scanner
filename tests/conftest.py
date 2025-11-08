@@ -141,15 +141,38 @@ async def app(mock_db_manager, mock_neo4j_manager):
         yield manager.app
 
 @pytest.fixture
+def mock_rabbitmq_manager(monkeypatch):
+    """Mocks the RabbitMQ manager to prevent real connections during tests."""
+    mock_manager = AsyncMock()
+    mock_manager.connect = AsyncMock()
+    mock_manager.close = AsyncMock()
+    mock_manager.publish_event = AsyncMock()
+
+    from platform_core import rabbitmq
+    monkeypatch.setattr(rabbitmq, "_rabbitmq_manager", mock_manager)
+    return mock_manager
+
+@pytest.fixture
 async def client(app):
     """Provides a fully configured async test client."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
+from platform_core.authentication import create_access_token
+
 @pytest.fixture
 def auth_headers() -> dict:
-    """Provides standard authentication headers for tests."""
+    """
+    Provides standard authentication headers for tests, including a valid JWT.
+    """
+    tenant_id = str(uuid.uuid4())
+    user_id = "test-user"
+
+    # Create a valid token for testing
+    token = create_access_token(user_id=user_id, tenant_id=tenant_id)
+
     return {
-        "X-Tenant-ID": str(uuid.uuid4()),
+        "Authorization": f"Bearer {token}",
+        "X-Tenant-ID": tenant_id,
         "Content-Type": "application/json"
     }

@@ -18,6 +18,7 @@ dependencies = [
     "casbin-async-sqlalchemy-adapter==1.13.0",
     "pydantic-settings==2.1.0",
     "neo4j==5.14.0",
+    "starlette==0.35.1",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,7 @@ dev = [
     "pytest-env==0.8.2",
     "asgi-lifespan==2.1.0",
     "aiosqlite==0.19.0",
+    "starlette==0.35.1",
 ]
 
 [tool.setuptools.packages.find]

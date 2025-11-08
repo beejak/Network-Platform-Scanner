@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     db_manager = getattr(app.state, "db_manager_override", get_database_manager())
     neo4j_manager = getattr(app.state, "neo4j_manager_override", get_neo4j_manager())
 
+    # Connect to RabbitMQ
+    from platform_core.rabbitmq import get_rabbitmq_manager
+    rabbitmq_manager = get_rabbitmq_manager()
+    await rabbitmq_manager.connect()
+
     logger.info("Step 2: Initializing plugins...")
     await plugin_registry.initialize_all(db_manager=db_manager, neo4j_manager=neo4j_manager)
     logger.info("✅ All plugins initialized")
@@ -56,6 +61,10 @@ async def lifespan(app: FastAPI):
     logger.info("APPLICATION SHUTDOWN")
     logger.info("=" * 80)
     await plugin_registry.shutdown_all()
+
+    # Close RabbitMQ connection
+    await rabbitmq_manager.close()
+
     logger.info("✅ Shutdown complete")
 
 
@@ -76,6 +85,7 @@ def create_app(db_manager_override=None, neo4j_manager_override=None) -> FastAPI
     if neo4j_manager_override:
         app.state.neo4j_manager_override = neo4j_manager_override
 
+    # Add CORS middleware first
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -84,16 +94,9 @@ def create_app(db_manager_override=None, neo4j_manager_override=None) -> FastAPI
         allow_headers=["*"],
     )
 
-    @app.middleware("http")
-    async def add_tenant_id(request: Request, call_next):
-        tenant_id = request.headers.get("X-Tenant-ID")
-        if not tenant_id:
-            # In a real app, you'd probably return a 400 Bad Request
-            # For now, we'll use a default for testing
-            tenant_id = "default-tenant"
-        request.state.tenant_id = tenant_id
-        response = await call_next(request)
-        return response
+    # Add the new AuthMiddleware
+    from platform_core.middleware import AuthMiddleware
+    app.add_middleware(AuthMiddleware)
 
     @app.get("/health")
     async def health_check():

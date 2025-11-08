@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Setuptools build artifacts
+*.egg-info/
+build/
+dist/
+eggs/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE / Editor specific
+.idea/
+.vscode/

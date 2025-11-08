@@ -27,7 +27,7 @@ async def get_db_session(
     """
     Get database session with tenant context using standard FastAPI DI.
     """
-    tenant_id = request.state.tenant_id
+    tenant_id = request.scope["state"]["tenant_id"]
 
     async with db_manager.get_session(tenant_id) as session:
         yield session
@@ -38,5 +38,8 @@ async def get_neo4j_session(
     """
     Get neo4j session with tenant context using standard FastAPI DI.
     """
+    # Although the session itself doesn't use the tenant_id,
+    # it's good practice to ensure it's available.
+    tenant_id = request.scope["state"]["tenant_id"]
     async with neo4j_manager.get_session() as session:
         yield session
