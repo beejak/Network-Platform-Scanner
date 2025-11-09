@@ -98,6 +98,34 @@ def mock_neo4j_manager():
     return manager
 
 # ============================================================================
+# MOCK PYNETBOX API
+# ============================================================================
+
+@pytest.fixture
+def mock_pynetbox_api(monkeypatch):
+    """Mocks the pynetbox.api call to return a mock API object."""
+    mock_api = MagicMock()
+
+    # Mock the structure of pynetbox: api.dcim.sites.all()
+    mock_api.dcim = MagicMock()
+    mock_api.dcim.sites = MagicMock()
+    mock_api.dcim.devices = MagicMock()
+    mock_api.ipam = MagicMock()
+    mock_api.ipam.ip_addresses = MagicMock()
+    mock_api.ipam.prefixes = MagicMock()
+
+    # Default return values are empty lists
+    mock_api.dcim.sites.all.return_value = []
+    mock_api.dcim.devices.all.return_value = []
+    mock_api.ipam.ip_addresses.all.return_value = []
+    mock_api.ipam.prefixes.all.return_value = []
+
+    # Patch the pynetbox.api function
+    monkeypatch.setattr("pynetbox.api", lambda url, token: mock_api)
+
+    return mock_api
+
+# ============================================================================
 # SAMPLE DATA FIXTURES
 # ============================================================================
 

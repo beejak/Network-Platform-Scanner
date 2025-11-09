@@ -1,12 +1,13 @@
 """NetBox API endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
-import uuid
+from uuid import UUID
 import logging
 
-from .models import Site
-from .schemas import SiteCreate, SiteResponse, SiteUpdate
+from .models import Site, Device, IPAddress, IPPrefix
+from .schemas import SiteResponse, DeviceResponse, IPAddressResponse, IPPrefixResponse
+from .services import NetBoxSyncService
 from platform_core.api.dependencies import get_db_session
 from platform_core.database.postgres import DatabaseManager
 
@@ -17,132 +18,110 @@ def create_netbox_router(db_manager: DatabaseManager) -> APIRouter:
     router = APIRouter()
 
     # ============================================================================
-    # CREATE
+    # SYNCHRONIZATION
     # ============================================================================
 
-    @router.post("/sites", response_model=SiteResponse)
-    async def create_site(
-        site_data: SiteCreate,
-        db: AsyncSession = Depends(get_db_session)
+    @router.post("/sync", status_code=202)
+    async def sync_netbox_data(
+        request: Request,
+        db: AsyncSession = Depends(get_db_session),
     ):
-        """Create a new site."""
-        logger.info(f"Creating site: {site_data.name}")
+        """Triggers a full data synchronization from NetBox."""
+        tenant_id = request.state.tenant_id
+        logger.info(f"[{tenant_id}] Starting NetBox data synchronization.")
 
-        # Extract tenant_id from db session context
-        # (In real implementation, get from request.state)
-        tenant_id = uuid.uuid4()  # For testing
+        sync_service = NetBoxSyncService(db, tenant_id)
+        await sync_service.sync_all()
 
-        site = Site(
-            **site_data.dict(),
-            tenant_id=tenant_id
-        )
-
-        db.add(site)
-        await db.commit()
-        await db.refresh(site)
-
-        # Publish event to RabbitMQ
-        from platform_core.rabbitmq import get_rabbitmq_manager
-        rabbitmq_manager = get_rabbitmq_manager()
-        event_data = SiteResponse.from_orm(site).model_dump_json()
-        await rabbitmq_manager.publish_event(
-            routing_key="site.created",
-            message_body=event_data,
-        )
-
-        logger.info(f"Site created: {site.id}")
-        return site
+        logger.info(f"[{tenant_id}] NetBox data synchronization complete.")
+        return {"message": "NetBox synchronization started."}
 
 
     # ============================================================================
-    # READ
+    # READ - SITES
     # ============================================================================
 
     @router.get("/sites", response_model=List[SiteResponse])
     async def get_sites(
-        db: AsyncSession = Depends(get_db_session)
+        request: Request,
+        db: AsyncSession = Depends(get_db_session),
     ):
-        """Get all sites."""
+        """Get all synchronized sites for the tenant."""
         from sqlalchemy import select
 
-        result = await db.execute(select(Site))
+        tenant_id = request.state.tenant_id
+        result = await db.execute(select(Site).where(Site.tenant_id == tenant_id))
         sites = result.scalars().all()
 
         return sites
 
-
     @router.get("/sites/{site_id}", response_model=SiteResponse)
     async def get_site(
-        site_id: uuid.UUID = Path(...),
+        request: Request,
+        site_id: UUID = Path(...),
         db: AsyncSession = Depends(get_db_session)
     ):
-        """Get a specific site."""
-        logger.info(f"Getting site: {site_id}")
-
-        # CRITICAL: This is what needs to work in tests!
+        """Get a specific site by its local ID."""
+        tenant_id = request.state.tenant_id
         site = await db.get(Site, site_id)
 
-        if not site:
-            logger.warning(f"Site not found: {site_id}")
+        if not site or site.tenant_id != tenant_id:
             raise HTTPException(status_code=404, detail="Site not found")
 
         return site
 
-
     # ============================================================================
-    # UPDATE
+    # READ - DEVICES
     # ============================================================================
 
-    @router.put("/sites/{site_id}", response_model=SiteResponse)
-    async def update_site(
-        site_id: uuid.UUID,
-        site_data: SiteUpdate,
-        db: AsyncSession = Depends(get_db_session)
+    @router.get("/devices", response_model=List[DeviceResponse])
+    async def get_devices(
+        request: Request,
+        db: AsyncSession = Depends(get_db_session),
     ):
-        """Update a site."""
-        logger.info(f"Updating site: {site_id}")
+        """Get all synchronized devices for the tenant."""
+        from sqlalchemy import select
 
-        # CRITICAL: This db.get() must return object from mock!
-        site = await db.get(Site, site_id)
+        tenant_id = request.state.tenant_id
+        result = await db.execute(select(Device).where(Device.tenant_id == tenant_id))
+        devices = result.scalars().all()
 
-        if not site:
-            logger.warning(f"Site not found: {site_id}")
-            raise HTTPException(status_code=404, detail="Site not found")
-
-        # Update fields
-        for key, value in site_data.dict(exclude_unset=True).items():
-            setattr(site, key, value)
-
-        await db.commit()
-        await db.refresh(site)
-
-        logger.info(f"Site updated: {site_id}")
-        return site
-
+        return devices
 
     # ============================================================================
-    # DELETE
+    # READ - IP ADDRESSES
     # ============================================================================
 
-    @router.delete("/sites/{site_id}")
-    async def delete_site(
-        site_id: uuid.UUID,
-        db: AsyncSession = Depends(get_db_session)
+    @router.get("/ip-addresses", response_model=List[IPAddressResponse])
+    async def get_ip_addresses(
+        request: Request,
+        db: AsyncSession = Depends(get_db_session),
     ):
-        """Delete a site."""
-        logger.info(f"Deleting site: {site_id}")
+        """Get all synchronized IP addresses for the tenant."""
+        from sqlalchemy import select
 
-        # CRITICAL: This db.get() must return object from mock!
-        site = await db.get(Site, site_id)
+        tenant_id = request.state.tenant_id
+        result = await db.execute(select(IPAddress).where(IPAddress.tenant_id == tenant_id))
+        ips = result.scalars().all()
 
-        if not site:
-            logger.warning(f"Site not found: {site_id}")
-            raise HTTPException(status_code=404, detail="Site not found")
+        return ips
 
-        await db.delete(site)
-        await db.commit()
+    # ============================================================================
+    # READ - IP PREFIXES
+    # ============================================================================
 
-        logger.info(f"Site deleted: {site_id}")
-        return {"message": "Site deleted successfully"}
+    @router.get("/prefixes", response_model=List[IPPrefixResponse])
+    async def get_prefixes(
+        request: Request,
+        db: AsyncSession = Depends(get_db_session),
+    ):
+        """Get all synchronized IP prefixes for the tenant."""
+        from sqlalchemy import select
+
+        tenant_id = request.state.tenant_id
+        result = await db.execute(select(IPPrefix).where(IPPrefix.tenant_id == tenant_id))
+        prefixes = result.scalars().all()
+
+        return prefixes
 
     return router

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # RabbitMQ
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
 
+    # NetBox Integration
+    NETBOX_URL: str = "http://localhost:8000"
+    NETBOX_TOKEN: str = "your-netbox-api-token"
+
     # JWT Authentication
     JWT_SECRET_KEY: str = "your-super-secret-key"
     JWT_ALGORITHM: str = "HS256"
