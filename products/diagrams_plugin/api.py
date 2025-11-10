@@ -1,60 +1,51 @@
+"""
+API endpoints for the Diagrams plugin.
+"""
 import os
-import tempfile
-from typing import Any, Dict
-
-from diagrams import Cluster, Diagram, Edge
-from diagrams.aws.compute import EC2
-from diagrams.aws.database import RDS
-from diagrams.aws.network import ELB
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request, Path
 from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
+import logging
 
-from .renderer import DiagramRequest
+from platform_core.api.dependencies import get_db_session
+from .services import DiagramsService
+
+logger = logging.getLogger(__name__)
 
 def create_diagrams_router() -> APIRouter:
     router = APIRouter()
 
-    @router.post("/generate")
-    async def generate_diagram(request: DiagramRequest):
-        """Generate a diagram from a definition."""
-        with tempfile.NamedTemporaryFile(delete=True) as tmpf:
-            filename_base = tmpf.name
+    @router.post("/generate/{site_slug}")
+    async def generate_site_diagram(
+        request: Request,
+        site_slug: str = Path(..., description="The slug of the site to generate a diagram for."),
+        db: AsyncSession = Depends(get_db_session),
+    ):
+        """
+        Generates a network diagram for a specific site.
+        """
+        tenant_id = request.state.tenant_id
+        logger.info(f"[{tenant_id}] Generating diagram for site: {site_slug}")
 
-        output_filename = f"{filename_base}.png"
+        service = DiagramsService(db, tenant_id)
 
         try:
-            with Diagram(
-                request.name, show=False, filename=filename_base, outformat="png"
-            ):
-                nodes: Dict[str, Any] = {}
-                # Simplified node lookup
-                provider_map = {
-                    "aws": {
-                        "compute": EC2,
-                        "database": RDS,
-                        "network": ELB,
-                    }
-                }
-                for node_data in request.nodes:
-                    provider = (node_data.provider or "").lower()
-                    node_type = node_data.type.lower()
-                    node_cls = provider_map.get(provider, {}).get(node_type, EC2)
-                    nodes[node_data.name] = node_cls(label=node_data.label)
+            diagram_path = await service.generate_site_diagram(site_slug)
 
-                for edge_data in request.edges:
-                    source = nodes.get(edge_data.source)
-                    target = nodes.get(edge_data.target)
-                    if source and target:
-                        Edge(source, target, label=edge_data.label)
+            # Use a background task to clean up the temporary file after the response is sent
+            cleanup_task = BackgroundTask(os.remove, diagram_path)
+
             return FileResponse(
-                output_filename,
+                diagram_path,
                 media_type="image/png",
-                background=BackgroundTask(os.remove, output_filename),
+                background=cleanup_task,
             )
+        except ValueError as e:
+            logger.warning(f"[{tenant_id}] Site not found for diagram generation: {site_slug}")
+            raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
-            if os.path.exists(output_filename):
-                os.remove(output_filename)
-            raise e
+            logger.error(f"[{tenant_id}] Failed to generate diagram for site {site_slug}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to generate diagram.")
 
     return router
