@@ -164,9 +164,8 @@ async def app(mock_db_manager, mock_neo4j_manager):
     app_instance.dependency_overrides[get_db_manager] = lambda: mock_db_manager
     app_instance.dependency_overrides[get_neo4j_manager] = lambda: mock_neo4j_manager
 
-    # LifespanManager is crucial for running startup/shutdown events
-    async with LifespanManager(app_instance) as manager:
-        yield manager.app
+    # The app instance is yielded directly now
+    yield app_instance
 
 @pytest.fixture
 def mock_rabbitmq_manager(monkeypatch):
@@ -183,8 +182,9 @@ def mock_rabbitmq_manager(monkeypatch):
 @pytest.fixture
 async def client(app):
     """Provides a fully configured async test client."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            yield ac
 
 from platform_core.authentication import create_access_token
 

@@ -1,6 +1,7 @@
 """Neo4j database connection manager."""
 from neo4j import AsyncGraphDatabase
 import os
+from contextlib import asynccontextmanager
 
 class Neo4jManager:
     """Neo4j database manager."""
@@ -12,11 +13,14 @@ class Neo4jManager:
         """Close the database connection."""
         await self.driver.close()
 
-    async def execute_query(self, query, params=None):
-        """Execute a query."""
-        async with self.driver.session() as session:
-            result = await session.run(query, params)
-            return await result.data(), await result.summary(), await result.keys()
+    @asynccontextmanager
+    async def get_session(self):
+        """Provides a Neo4j session as an async context manager."""
+        session = self.driver.session()
+        try:
+            yield session
+        finally:
+            await session.close()
 
 from platform_core.config import get_settings
 

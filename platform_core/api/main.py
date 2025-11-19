@@ -65,6 +65,9 @@ async def lifespan(app: FastAPI):
     # Close RabbitMQ connection
     await rabbitmq_manager.close()
 
+    # Close Neo4j connection
+    await neo4j_manager.close()
+
     logger.info("✅ Shutdown complete")
 
 
