@@ -1,16 +1,39 @@
-# Enterprise Platform Foundation
+# Enterprise Network Infrastructure Platform
 
-This repository contains the foundational infrastructure for a multi-tenant, modular enterprise platform. It is designed to serve as the core for up to 15 distinct products, providing common services like authentication, data access, and asynchronous communication.
+![Platform Dataflow Diagram](docs/images/platform_dataflow.png)
 
-## Core Architecture
+## Overview
 
-The platform is built on a modern, asynchronous Python stack and features:
+This repository contains a multi-tenant, modular enterprise platform for network infrastructure management and visualization. It is designed to serve as the core for up to 15 distinct products, providing common services like authentication, data access, and asynchronous communication. The platform is built on a modern, asynchronous Python stack and is designed for scalability and extensibility.
 
-*   **Modular Plugin System:** Each product is a self-contained plugin located in the `products/` directory. The platform discovers and loads these plugins at startup.
-*   **Multi-Tenant Database:** The PostgreSQL database is designed with a multi-tenant schema in mind, using row-level security (not yet fully implemented) to isolate tenant data.
-*   **FastAPI Gateway:** A central FastAPI application serves as the API gateway, routing requests to the appropriate plugins.
-*   **Asynchronous Communication:** RabbitMQ is integrated for event-driven communication between services (not yet fully implemented).
-*   **Multiple Data Stores:** The architecture supports PostgreSQL for relational data, Neo4j for graph data, and ClickHouse for time-series data.
+## Features
+
+*   **Modular Plugin Architecture:** The platform is built around a powerful plugin system that allows for the easy addition of new products and features. Each plugin is a self-contained module that can be discovered and loaded at runtime.
+*   **Multi-Tenant by Design:** The entire platform is built with multi-tenancy at its core. Data is isolated at the database level, and all API endpoints are tenant-aware.
+*   **Asynchronous from the Ground Up:** Built on FastAPI and an asynchronous stack, the platform is designed for high performance and scalability.
+*   **Event-Driven Communication:** An integrated RabbitMQ event bus allows for asynchronous communication between plugins, enabling decoupled and resilient workflows.
+*   **Multiple Data Stores:** The architecture is designed to leverage the best database for the job, with support for:
+    *   **PostgreSQL:** For structured, relational data.
+    *   **Neo4j:** For graph-based data and relationship analysis.
+    *   **ClickHouse:** For high-performance, time-series data (coming soon).
+
+### Implemented Plugins
+
+*   **NetBox Plugin:**
+    *   Integrates with a NetBox instance to synchronize key infrastructure data, including sites, devices, IP addresses, and prefixes.
+    *   Provides read-only API endpoints for querying the synchronized data.
+*   **Diagrams Plugin:**
+    *   Generates network topology diagrams for specific sites based on the synchronized NetBox data.
+    *   Provides an API endpoint to generate and return diagrams as PNG images.
+
+## Architecture
+
+The platform is composed of several key components:
+
+*   **API Gateway:** A central FastAPI application that serves as the entry point for all API requests. It handles authentication, tenant isolation, and routing of requests to the appropriate plugins.
+*   **Core Platform Services:** A set of common services that are available to all plugins, including database access, the event bus, and the plugin registry.
+*   **Product Plugins:** Self-contained modules that provide specific features and functionality. Each plugin can have its own database models, API endpoints, and event listeners.
+*   **Data Stores:** A collection of databases that are used to store different types of data.
 
 ## Getting Started
 
