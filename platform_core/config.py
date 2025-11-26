@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     NETBOX_URL: str = "http://localhost:8000"
     NETBOX_TOKEN: str = "your-netbox-api-token"
 
+    # LibreNMS Integration
+    LIBRENMS_URL: str = "http://localhost:8001"
+    LIBRENMS_TOKEN: str = "your-librenms-api-token"
+
     # JWT Authentication
     JWT_SECRET_KEY: str = "your-super-secret-key"
     JWT_ALGORITHM: str = "HS256"

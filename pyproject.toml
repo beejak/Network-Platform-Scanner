@@ -20,6 +20,7 @@ dependencies = [
     "neo4j==5.14.0",
     "starlette==0.35.1",
     "pynetbox==7.5.0",
+    "pylibrenms",
 ]
 
 [project.optional-dependencies]
